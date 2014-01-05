@@ -72,7 +72,8 @@
 
 #define nLEDs 6 // 6 LEDs connected to the Arduino
 #define TCYCLE 2000; // multiply TCYLCE by the #states in a lighting pattern 
-					 // indicates how long the pattern should run for
+					 // indicates how long the pattern should run for (ms)
+#define TFADE 8 // delay between LED fade levels (ms)
 
 char pins_gnd[nLEDs +1] = {13,12,8,7,4,2, -1};
 char pins_pwm[nLEDs +1] = {10,11,6,9,3,5, -1};
@@ -89,12 +90,17 @@ char pattern_count[nLEDs*2 +1] = {0x00, 0x20, 0x30, 0x38, 0x3C, 0x3E, 0x3F,
 char pattern_mexican[nLEDs +1] = {0x38, 0x1C, 0x0E, 0x07, 0x23, 0x31, -1};
 char pattern_test[nLEDs +1] = {0x20, 0x10, 0x08, 0x04, 0x02, 0x01, -1};
 
- char * patterns[7 +1] = {pattern_test, pattern_off, pattern_on, pattern_flash,
-	  	pattern_rotate, pattern_count, /*pattern_reverse,*/ pattern_mexican};
+ char * patterns[7 +1] = {pattern_test, /*pattern_off,*/ pattern_on, 
+	 	pattern_flash, pattern_rotate, pattern_count, /*pattern_reverse,*/
+		pattern_mexican};
 
-int delays[4 +1] = {1000,500,250,100, -1}; //tdelay during a state
+int delays[4 +1] = {1024,512,256,128, -1}; //tdelay during a state
+
+char state = 0; //global state of LEDs (pattern bitmask)
 
 //-----------------------------------------------------------------------------
+
+
 
 /* digitalWrites(array, state)
  *   action: sets the digital pins in ARRAY to STATE.
@@ -124,19 +130,62 @@ void pinModes(char * array, byte mode)
 void stateSet(char bitmask)
 {
 	if (bitmask<0) return;
+	state = bitmask;
 	for (int i=0; i<nLEDs; i++)
         digitalWrite(pins_pwm[nLEDs-i-1], ((byte)(bitmask) & (1<<i)?HIGH:LOW));
 }
 
-/* runPattern(pattern, tinterval)
- *   action: cycle through LED states in the pattern, spaced at TINTERVAL ms
+/* stateFadeTo(bitmask, tinterval)
+ *   action: uses PWM to fade the LEDs between the current state
+ *            and that of BITMASK, over TINTERVAL ms.
+ *   preconditions: TINTERVAL % 2 == 0
+ *                  TINTERVAL > 8
+ *                  pinModes() has already been called on all the LED pins
  */
-void runPattern(char * pattern, int tinterval) {
-	for (char *p=pattern; *p>-1; p++) {
-		stateSet(*p);
-		delay(tinterval);
+void stateFadeTo(char bitmask, int tinterval) {
+	byte low = 255, high = 0;
+	char diffmask = bitmask ^ state; // bitmap of LEDs that need to change
+	int nticks = tinterval/TFADE;
+	int ticksize = 256/nticks;
+	
+	if (nticks == 0 || tinterval < 0) return;
+	for (; nticks>0; nticks--) {
+		if (high+ticksize >= 255) {
+			low = 0;
+			high = 255;
+		} else {
+			low -= ticksize;
+			high += ticksize;
+		}
+		for (int i=0; i<nLEDs; i++) {
+			if ((byte)(diffmask) & (1<<i)) {
+            	analogWrite(pins_pwm[nLEDs-i-1], 
+							((byte)(bitmask) & (1<<i)?high:low));
+			}
+		}
+		delay(TFADE);
 	}
-	stateSet(0);
+	
+	//delay(tinterval);
+	stateSet(bitmask);
+} 
+
+/* runPattern(pattern, tinterval, fade)
+ *   action: cycle through LED states in the pattern, spaced at TINTERVAL ms
+ *           use PWM fading if specified by FADE
+ *   preconditions: TINTERVAL % 2 == 0
+ *                  TINTERVAL > 8
+ */
+void runPattern(char * pattern, int tinterval, bool fade) {
+	for (char *p=pattern; *p>-1; p++) {
+		if (fade) {
+			stateFadeTo(*p, tinterval);
+		} else {
+			stateSet(*p);
+			delay(tinterval);
+		}
+	}
+	//stateSet(0);
 }
 
 //-----------------------------------------------------------------------------
@@ -150,21 +199,26 @@ void setup()
   digitalWrites(pins_pwm, LOW);
   
 #ifdef TEST
-  //A :: manual test, just lighting sequence 1-6 
-  // runPattern(pattern_test, 330);
-  
-  //B :: automatic test, all lighting sequences
-  for (char **p=patterns; *p!=NULL; p++) {
-	  runPattern(*p, 330);
-	  delay(1000);
-  }
-  #endif
+  //A :: fixed test, just lighting sequence 1-6 
+  // runPattern(pattern_test, 500);
+#endif
   
 }
 
 void loop() 
 {
+
+#ifdef TEST
+  //B :: looping test, all lighting sequences
+  for (char **p=patterns; *p!=NULL; p++) {
+	  runPattern(*p, 256, true);
+	  delay(512);
+  }
+#else
+  
   delay(1000);
+  
+#endif
 }
 
 //-----------------------------------------------------------------------------
@@ -173,7 +227,7 @@ void loop()
 		X- make a set of bitmask arrays defining lighting states for various patterns
 		X- make a global char ** array containing all these patterns
 		X- make a function for executing a given pattern at a given speed
-		- make a function for executing a given pattern with fade
+		X- make a function for executing a given pattern with fade
 		- make a higher-level function for executing all patterns at various speeds
 			> modes: sequential, random, basic/slow, crazy/fast, pulse only, on only
 		- add a parallel serial console
