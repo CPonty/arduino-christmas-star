@@ -24,6 +24,9 @@
 char pins_gnd[7] = {13,12,8,7,4,2, -1};
 char pins_pwm[7] = {10,11,6,9,3,5, -1};
 
+int speeds[5] = {1000,500,250,100, -1};
+int cycleTime = 2000; //multiply by #states in the active lighting pattern (generally 6)
+
 //-----------------------------------------------------------------------------
 
 /* digitalWrites(array, state)
