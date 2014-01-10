@@ -62,45 +62,107 @@
 //     000111 ==> 0x07
 //     100011 ==> 0x23
 //     110001 ==> 0x31
+// TRIANGLE (2)
+//     101010 ==> 0x2A
+//     010101 ==> 0x15
+// ERROR (1)
+//     101010 ==> 0x2A
+//     000000 ==> 0x00
 //////////////////////
 //     000000 ==> 0x00
 //-----------------------------------------------------------------------------
 
 #include <stdint.h>
 
-#define TEST 1
+void digitalWrites(char * array, byte state);
+void pinModes(char * array, byte mode);
+void stateSet(char bitmask);
+void stateFadeTo(char bitmask, int tinterval);
+void runPattern(char * pattern, int tinterval, bool fade);
+bool runPatternId(char patternId, int tinterval, bool fade);
+bool runModeId(char modeId);
+void modeOff();
+void modeOn();
+void modePulse();
+void modeSequential();
+void modeRandom();
+void modeFixed();
+void err(const char * msg);
+
+//-----------------------------------------------------------------------------
+
+#define TEST
 
 #define nLEDs 6 // 6 LEDs connected to the Arduino
-#define TCYCLE 2000; // multiply TCYLCE by the #states in a lighting pattern 
-					 // indicates how long the pattern should run for (ms)
+#define nCYCLES nLEDs*4; // indicates how many states a pattern should loop through
 #define TFADE 8 // delay between LED fade levels (ms)
+
+#define BPM_MIN 1 // "beats per minute" for PULSE mode (user can set on console)
+#define BPM_DEFAULT 60
+#define BPM_MAX 1000
+
+#define MODE_OFF 0
+#define MODE_ON 1
+#define MODE_PULSE 2
+#define MODE_SEQUENTIAL 3
+#define MODE_RANDOM 4
+#define MODE_FIXED 5
+#define MODE_DEFAULT MODE_RANDOM
+#define MODE_MAX 5
 
 char pins_gnd[nLEDs +1] = {13,12,8,7,4,2, -1};
 char pins_pwm[nLEDs +1] = {10,11,6,9,3,5, -1};
 
 // Bitmasks of 0b00xxxxxx, where the lower 6 bits indicate the active LEDs
 // Signed value; negative value (MSB=1) indicates end-of-array
+char pattern_test[nLEDs +1] = {0x20, 0x10, 0x08, 0x04, 0x02, 0x01, -1};
+char pattern_error[2 +1] = {0x2A, 0x00, -1};
 char pattern_off[1 +1] = {0x00, -1};
 char pattern_on[1 +1] = {0x3F, -1};
 char pattern_flash[2 +1] = {0x3F, 0x00, -1};
 char pattern_rotate[3 +1] = {0x24, 0x12, 0x09, -1};
 char pattern_count[nLEDs*2 +1] = {0x00, 0x20, 0x30, 0x38, 0x3C, 0x3E, 0x3F, 
 	0x1F, 0x0F, 0x07, 0x03, 0x01, -1};
-// char pattern_reverse[nLEDs +1] = {0x24, 0x12, 0x0C, 0x0C, 0x12, 0x24, -1};
 char pattern_mexican[nLEDs +1] = {0x38, 0x1C, 0x0E, 0x07, 0x23, 0x31, -1};
-char pattern_test[nLEDs +1] = {0x20, 0x10, 0x08, 0x04, 0x02, 0x01, -1};
+char pattern_triangle[2 +1] = {0x2A, 0x15, -1};
 
- char * patterns[7 +1] = {pattern_test, /*pattern_off,*/ pattern_on, 
-	 	pattern_flash, pattern_rotate, pattern_count, /*pattern_reverse,*/
-		pattern_mexican};
+ char * patterns[7 +1] = {pattern_test, /*pattern_off,*/ /*pattern_error,*/
+	 	pattern_on, pattern_flash, pattern_rotate, pattern_count,
+		pattern_mexican, pattern_triangle, NULL};
+		
+#define PATTERN_TEST 0
+#define PATTERN_ON 1
+#define PATTERN_FLASH 2
+#define PATTERN_ROTATE 3
+#define PATTERN_COUNT 4
+#define PATTERN_MEXICAN 5
+#define PATTERN_TRIANGLE 6
+#define PATTERN_DEFAULT PATTERN_FLASH
+#define PATTERN_MAX 6
 
-int delays[4 +1] = {1024,512,256,128, -1}; //tdelay during a state
-
-char state = 0; //global state of LEDs (pattern bitmask)
+#define TDELAY_MIN 64 // LED state time period (ms)
+#define TDELAY_DEFAULT 256
+#define TDELAY_MAX 1024
+#define TDELAY_SET_MIN 1 // (user sets value 1..5, scales to 64*(2**(value-1)))
+#define TDELAY_SET_MAX 5
+		
+#define FADE_DEFAULT true //toggles smoothly fading between LED states
 
 //-----------------------------------------------------------------------------
 
+char state = 0x0; //LED pattern bitmask
 
+bool fade = FADE_DEFAULT;
+
+int tdelay = TDELAY_DEFAULT;
+
+int bpm = BPM_DEFAULT;
+
+char pattern = PATTERN_DEFAULT;
+
+char mode = MODE_DEFAULT; 
+
+//-----------------------------------------------------------------------------
 
 /* digitalWrites(array, state)
  *   action: sets the digital pins in ARRAY to STATE.
@@ -142,7 +204,8 @@ void stateSet(char bitmask)
  *                  TINTERVAL > 8
  *                  pinModes() has already been called on all the LED pins
  */
-void stateFadeTo(char bitmask, int tinterval) {
+void stateFadeTo(char bitmask, int tinterval) 
+{
 	byte low = 255, high = 0;
 	char diffmask = bitmask ^ state; // bitmap of LEDs that need to change
 	int nticks = tinterval/TFADE;
@@ -176,7 +239,8 @@ void stateFadeTo(char bitmask, int tinterval) {
  *   preconditions: TINTERVAL % 2 == 0
  *                  TINTERVAL > 8
  */
-void runPattern(char * pattern, int tinterval, bool fade) {
+void runPattern(char * pattern, int tinterval, bool fade) 
+{
 	for (char *p=pattern; *p>-1; p++) {
 		if (fade) {
 			stateFadeTo(*p, tinterval);
@@ -188,15 +252,58 @@ void runPattern(char * pattern, int tinterval, bool fade) {
 	//stateSet(0);
 }
 
+/* runPatternId(patternId, tinterval, fade)
+ *   action: execute runPattern for the PATTERNS entry matching PATTERNID.
+ *   returns: true  if 0 <= PATTERNID <= PATTERN_MAX
+ *            false otherwise
+ */
+bool runPatternId(char patternId, int tinterval, bool fade) 
+{
+	if (patternId<0 || patternId>PATTERN_MAX)
+		return false;
+	runPattern(patterns[patternId], tinterval, fade);
+	return true;
+}
+
+/* runModeId(modeId)
+ *   action: execute the function in the MODES entry matching MODEID.
+ *   returns: true  if 0 <= MODEID <= MODE_MAX
+ *            false otherwise
+ */
+bool runModeId(char modeId) 
+{
+	//TODO
+}
+
+//TODO string to int
+//TODO set____() functions for each applicable global
+
+/* err()
+ *  action: print a serial MESSAGE, run pattern_error() and halt. 
+ *          User sees blinking red lights.
+ *          If MESSAGE is null, nothing is printed.
+ */
+void err(const char * message) 
+{
+	if (message != NULL) {
+		Serial.println(message);
+	}
+	while(1) runPattern(pattern_error, 256, true);
+}
+
 //-----------------------------------------------------------------------------
 
 void setup() 
 {
-  // zero all pins
+  // initialise & zero all pins
   pinModes(pins_gnd, OUTPUT);
   pinModes(pins_pwm, OUTPUT);
   digitalWrites(pins_gnd, LOW);
   digitalWrites(pins_pwm, LOW);
+  
+  // serial setup
+  Serial.begin(9600);
+  Serial.println("\n ~~ Chris Ponticello's Arduino Christmas Star ~~\n");
   
 #ifdef TEST
   //A :: fixed test, just lighting sequence 1-6 
@@ -211,13 +318,14 @@ void loop()
 #ifdef TEST
   //B :: looping test, all lighting sequences
   for (char **p=patterns; *p!=NULL; p++) {
-	  runPattern(*p, 256, true);
-	  delay(512);
+	  runPattern(*p, TDELAY_DEFAULT, true);
+	  delay(TDELAY_DEFAULT);
   }
 #else
   
-  delay(1000);
-  
+  err(NULL);
+  runModeId(mode);
+	
 #endif
 }
 
@@ -228,17 +336,23 @@ void loop()
 		X- make a global char ** array containing all these patterns
 		X- make a function for executing a given pattern at a given speed
 		X- make a function for executing a given pattern with fade
-		- make a higher-level function for executing all patterns at various speeds
-			> modes: sequential, random, basic/slow, crazy/fast, pulse only, on only
-		- add a parallel serial console
+		X- extend err() to print to the console
+		- implement all the modes
+			> higher-level functions for executing patterns
+			> modes: sequential, random, pulse only, on only
+		- implement all the commands console commands
+		- add a parallel serial console line reader
 		- add a parser to the serial console to recognise commands:
+			mode ___ (0=off, 1=on, 2=pulse, 3=sequential, 4=random, 5=fixed)
 			bpm ___ (e.g. 240bpm = 1000 * 60 / 240 = 250ms cycle)
-			mode ___ (1=sequential, 2=random, 3=basic/slow, 4=crazy/fast, 5=pulse, 6=on
-			off
+				> only valid on pulse mode
+			speed ___ (1..5, scales to 64,128,256,512,1024)
+			pattern ___ ()
 			help (print usable commands)
-		- implement all the commands
 
 	problem of parallel console & operations:
 		- every time delay(x) is called, instead call block(x)
 		- block is a custom function which does serial_handle() and then delay(x)
+		- if serial_handle() makes changes to the global state it returns true,
+		  and the calling MODE function should exit
 */
